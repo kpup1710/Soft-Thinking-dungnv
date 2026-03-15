@@ -21,4 +21,4 @@ python run_sglang_softthinking.py \
     --num_gpus 1 \
     --num_samples 1 \
     --enable_soft_thinking \
-    --use-projection-concept-token
+    --use_projection_concept_token

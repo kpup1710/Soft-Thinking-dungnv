@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--enable_soft_thinking", action="store_true", help="Enable soft thinking mode")
     parser.add_argument("--think_end_str", type=str, default="</think>")
     parser.add_argument("--max_topk", type=int, default=15)
+    parser.add_argument("--use_projection_concept_token", action="store_true", help="Use orthogonal projection onto unembedding subspace as concept token")
 
     args = parser.parse_args()
 
@@ -265,6 +266,7 @@ Test Cases:
                 disable_cuda_graph=True,
                 disable_overlap_schedule=True,
                 enable_soft_thinking=args.enable_soft_thinking,
+                use_projection_concept_token=args.use_projection_concept_token,
                 add_noise_dirichlet=args.add_noise_dirichlet,
                 add_noise_gumbel_softmax=args.add_noise_gumbel_softmax,
                 max_topk=args.max_topk,
