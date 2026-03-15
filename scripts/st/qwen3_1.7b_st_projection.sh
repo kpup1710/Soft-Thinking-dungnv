@@ -1,6 +1,5 @@
 python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
 
-export 
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
     --model_name "./models/Qwen/Qwen3-1.7B" \
@@ -21,4 +20,5 @@ python run_sglang_softthinking.py \
     --end_idx 100000 \
     --num_gpus 1 \
     --num_samples 1 \
-    --enable_soft_thinking
+    --enable_soft_thinking \
+    --use-projection-concept-token
