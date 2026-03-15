@@ -57,9 +57,51 @@ python run_sglang_softthinking.py \
 
 ### 2. Projection-Based Concept Token (`--use_projection_concept_token`)
 
-**`scripts/st/qwen3_1.7b_st_projection.sh`** adds a new flag that orthogonally projects each weighted concept embedding onto the **unembedding subspace** before feeding it into the next layer.
+**`scripts/st/qwen3_1.7b_st_projection.sh`** adds a new flag that replaces the standard weighted-embedding concept token with an **orthogonal projection of the hidden state onto the span of the top-k unembedding vectors**.
 
-**Motivation:** In small models, the raw weighted embedding (sum of top-k token embeddings weighted by probability) may fall far from the model's natural input distribution. Projecting it onto the unembedding subspace keeps the concept token closer to a "plausible word vector", potentially reducing the noise problem on small models.
+#### Motivation
+
+Standard Soft Thinking computes:
+
+```
+concept_token = sum_i( prob[i] * embed_input[token[i]] )
+```
+
+This blends input embeddings. In small models, the resulting vector can fall far from the model's natural input distribution, introducing noise. The projection approach instead asks: *what is the best approximation of the current hidden state `h` that lies entirely within the subspace spanned by the top-k unembedding rows?*
+
+#### Math
+
+Let:
+- `h` ∈ ℝᴰ — the last hidden state (shape `[B, D]`)
+- `W_k` ∈ ℝᴷˣᴰ — the rows of the unembedding matrix `lm_head.weight` corresponding to the top-k predicted tokens (shape `[B, K, D]`)
+
+The concept token is the **orthogonal projection of `h` onto the row space of `W_k`**:
+
+```
+concept_token = W_kᵀ (W_k W_kᵀ)⁻¹ W_k h
+```
+
+In code ([sglang_soft_thinking_pkg/python/sglang/srt/models/qwen2.py](sglang_soft_thinking_pkg/python/sglang/srt/models/qwen2.py)):
+
+```python
+pruned_hs = logits_output.pruned_hidden_states          # h:    [B, D]
+W_k = self.lm_head.weight[logits_output.topk_indices]   # W_k:  [B, K, D]
+Wh  = torch.bmm(W_k, pruned_hs.unsqueeze(-1))           # W_k h: [B, K, 1]
+WWT = torch.bmm(W_k, W_k.transpose(1, 2))               # W_k W_kᵀ: [B, K, K]
+c   = torch.linalg.solve(WWT, Wh)                       # (W_k W_kᵀ)⁻¹ W_k h: [B, K, 1]
+concept_embedding = torch.bmm(W_k.transpose(1, 2), c)   # W_kᵀ c: [B, D]
+```
+
+The same logic is applied identically in the LLaMA model ([sglang_soft_thinking_pkg/python/sglang/srt/models/llama.py](sglang_soft_thinking_pkg/python/sglang/srt/models/llama.py)).
+
+#### Why This Is Different
+
+| | Standard Soft Thinking | Projection Concept Token |
+|---|---|---|
+| Uses | Input embedding matrix | Unembedding (lm_head) matrix |
+| Operation | Weighted sum of rows | Orthogonal projection of hidden state |
+| Stays in | Convex hull of input embeddings | Row space of top-k unembedding vectors |
+| Intuition | Blend of "what tokens mean as inputs" | Best reconstruction of hidden state from top-k output directions |
 
 ```bash
 python run_sglang_softthinking.py \
