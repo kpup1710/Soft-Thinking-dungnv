@@ -1,6 +1,6 @@
 python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
 
-export 
+export CUDA_VISIBLES_DEVICES=0
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
     --model_name "./models/Qwen/Qwen3-1.7B" \
