@@ -774,6 +774,9 @@ class Req:
                 self.topk_prob[0] = 1.0
                 self.topk_idx[0] = self.sampling_params.think_end_str_id
                 self.low_entropy_steps = 0
+                # Reset concept_embedding so the next forward uses exact embed_tokens[think_end_str_id]
+                # via weighted_forward_tp, matching normal ST behavior at the </think> transition.
+                self.concept_embedding = None
         else:
             if self.sampling_params.early_stopping_entropy_threshold > 0:
                 if self.entropy < self.sampling_params.early_stopping_entropy_threshold:

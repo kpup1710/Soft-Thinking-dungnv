@@ -1155,11 +1155,14 @@ class ModelRunner:
             V_local = W_local.shape[0]
             start = self.tp_rank * V_local
 
-            def _gather_rows_tp(global_indices):
-                """TP-aware row lookup from embed_tokens: [B, K] global indices → [B, K, D]."""
+            def _gather_rows_tp(global_indices, W=None):
+                """TP-aware row lookup: [B, K] global indices → [B, K, D].
+                W defaults to W_embed_local; pass W_local to use lm_head rows."""
+                if W is None:
+                    W = W_embed_local
                 in_range = (global_indices >= start) & (global_indices < start + V_local)
                 local_idx = (global_indices - start).clamp(0, V_local - 1)
-                rows = W_embed_local[local_idx]
+                rows = W[local_idx]
                 rows = rows * in_range.unsqueeze(-1).to(rows.dtype)
                 return tensor_model_parallel_all_reduce(rows)
 
@@ -1180,18 +1183,23 @@ class ModelRunner:
 
             if (global_server_args_dict.get("use_projection_concept_token", False)
                     and logits_output.topk_indices is not None):
-                # Project pruned_hs onto the span of the top-k embed_tokens rows.
-                W_k = _gather_rows_tp(logits_output.topk_indices.long())  # [B, K, D]
-                W_k32 = W_k.float()
-                hs32  = pruned_hs.float()
-                Wh  = torch.bmm(W_k32, hs32.unsqueeze(-1))                # [B, K, 1]
-                WWT = torch.bmm(W_k32, W_k32.transpose(1, 2))             # [B, K, K]
-                # Ridge regularization to prevent near-singular WWT from producing NaN.
-                K = W_k32.shape[1]
-                WWT = WWT + 1e-4 * torch.eye(K, device=WWT.device, dtype=WWT.dtype).unsqueeze(0)
+                # Projection concept token (decoupled for non-tied models):
+                # 1. Use lm_head rows to compute coefficients c (semantic meaning from unembedding space)
+                # 2. Use embed_tokens rows with those coefficients as output (correct input space)
+                # For tied models W_lm == W_embed so this reduces to the original formula.
+                topk_idx = logits_output.topk_indices.long()              # [B, K]
+                W_lm_k = _gather_rows_tp(topk_idx, W=W_local)            # [B, K, D] lm_head rows
+                W_emb_k = _gather_rows_tp(topk_idx)                      # [B, K, D] embed_tokens rows
+                W_lm32  = W_lm_k.float()
+                W_emb32 = W_emb_k.float()
+                hs32    = pruned_hs.float()
+                Wh  = torch.bmm(W_lm32, hs32.unsqueeze(-1))              # [B, K, 1]
+                WWT = torch.bmm(W_lm32, W_lm32.transpose(1, 2))          # [B, K, K]
+                K = W_lm32.shape[1]
+                WWT = WWT + 1e-4 * torch.eye(K, device=WWT.device, dtype=torch.float32).unsqueeze(0)
                 c   = torch.linalg.solve(WWT, Wh)                         # [B, K, 1]
                 logits_output.concept_embedding = _safe_concept_emb(
-                    torch.bmm(W_k32.transpose(1, 2), c).squeeze(-1).to(pruned_hs.dtype))
+                    torch.bmm(W_emb32.transpose(1, 2), c).squeeze(-1).to(pruned_hs.dtype))
             elif global_server_args_dict.get("use_pseudoinverse_concept_token", False):
                 # Prob-weighted sum over ALL embed_tokens rows (probs from lm_head logits).
                 full_logits = _full_logits_tp()                            # [B, V]
@@ -1224,17 +1232,38 @@ class ModelRunner:
                 # Warm start: standard ST (topk_probs already computed by sampler via lm_head)
                 topk_probs = logits_output.topk_probs.to(W_k.dtype)       # [B, K]
                 emb = (topk_probs.unsqueeze(1) @ W_k).squeeze(1)          # [B, D]
-                for _ in range(n_iter):
-                    residual = emb - pruned_hs
-                    grad = torch.bmm(W_k, residual.unsqueeze(-1)).squeeze(-1)  # [B, K]
-                    k_local = grad.argmin(dim=-1)
-                    w_k = W_k[torch.arange(W_k.shape[0], device=W_k.device), k_local]
-                    d = w_k - emb
-                    num = -(residual * d).sum(dim=-1)
-                    denom = (d * d).sum(dim=-1).clamp(min=1e-10)
-                    gamma = (num / denom).clamp(0.0, 1.0).unsqueeze(-1)
-                    emb = emb + gamma * d
+                soft_mask = forward_batch.sampling_info.soft_thinking_modes  # [B] bool or None
+                soft_rows = soft_mask.nonzero(as_tuple=True)[0] if soft_mask is not None else torch.arange(emb.shape[0], device=emb.device)
+                if soft_rows.numel() > 0:
+                    for _ in range(n_iter):
+                        residual = emb[soft_rows] - pruned_hs[soft_rows]
+                        grad = torch.bmm(W_k[soft_rows], residual.unsqueeze(-1)).squeeze(-1)
+                        k_local = grad.argmin(dim=-1)
+                        w_k = W_k[soft_rows, k_local]
+                        d = w_k - emb[soft_rows]
+                        num = -(residual * d).sum(dim=-1)
+                        denom = (d * d).sum(dim=-1).clamp(min=1e-10)
+                        gamma = (num / denom).clamp(0.0, 1.0).unsqueeze(-1)
+                        emb[soft_rows] = emb[soft_rows] + gamma * d
+                # Non-soft rows: warm start = exact hard token embedding (topk_probs=[1,0,...])
+                # No Frank-Wolfe needed; emb[non_soft] is already embed_tokens[sampled_token].
                 logits_output.concept_embedding = _safe_concept_emb(emb)
+
+            # For projection/pseudoinverse/simplex, override non-soft rows with exact
+            # hard token embeddings. Those methods compute soft concepts for all rows,
+            # but answer-phase tokens must use their actual sampled token embedding.
+            if (logits_output.concept_embedding is not None
+                    and logits_output.topk_indices is not None
+                    and not global_server_args_dict.get("use_topk_simplex_concept_token", False)):
+                soft_mask = forward_batch.sampling_info.soft_thinking_modes  # [B] bool or None
+                if soft_mask is None:
+                    non_soft_rows = torch.zeros(0, dtype=torch.long, device=logits_output.concept_embedding.device)
+                else:
+                    non_soft_rows = (~soft_mask).nonzero(as_tuple=True)[0]
+                if non_soft_rows.numel() > 0:
+                    hard_ids = logits_output.topk_indices[non_soft_rows, 0].unsqueeze(-1)  # [M, 1]
+                    hard_emb = _gather_rows_tp(hard_ids).squeeze(1)                        # [M, D]
+                    logits_output.concept_embedding[non_soft_rows] = hard_emb.to(logits_output.concept_embedding.dtype)
 
         # ==========
         # end of soft thinking

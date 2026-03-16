@@ -14,7 +14,7 @@ python run_sglang_softthinking.py \
     --after_thinking_top_p 0.95 \
     --after_thinking_top_k 30 \
     --after_thinking_min_p 0.0 \
-    --early_stopping_entropy_threshold 0.0 \
+    --early_stopping_entropy_threshold 0.00 \
     --early_stopping_length_threshold 256 \
     --start_idx 0 \
     --end_idx 100000 \
@@ -22,6 +22,6 @@ python run_sglang_softthinking.py \
     --num_samples 16 \
     --enable_soft_thinking \
     --use_topk_simplex_concept_token \
-    --simplex_n_iter 20 \
+    --simplex_n_iter 2 \
     --mem_fraction_static 0.8 \
     --output_dir "results/st_topksimplex"

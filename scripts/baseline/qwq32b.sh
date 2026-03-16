@@ -14,7 +14,7 @@ python run_sglang_softthinking.py \
     --after_thinking_top_p 0.95 \
     --after_thinking_top_k 30 \
     --after_thinking_min_p 0.0 \
-    --early_stopping_entropy_threshold 0.0 \
+    --early_stopping_entropy_threshold 0.01 \
     --early_stopping_length_threshold 256 \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
