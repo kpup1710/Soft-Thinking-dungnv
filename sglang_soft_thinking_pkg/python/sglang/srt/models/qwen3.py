@@ -20,6 +20,7 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2MLP as Qwen3MLP
@@ -269,9 +270,19 @@ class Qwen3ForCausalLM(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
         if not get_embedding:
-            return self.logits_processor(
+            logits_output = self.logits_processor(
                 input_ids, hidden_states, self.lm_head, forward_batch
             )
+            # ==========
+            # begin of soft thinking
+            # ==========
+            # All concept embedding methods are computed in model_runner.sample()
+            # after sampling, where topk_indices is available and TP-aware
+            # implementations can be used.
+            # ==========
+            # end of soft thinking
+            # ==========
+            return logits_output
         else:
             return self.pooler(hidden_states, forward_batch)
 

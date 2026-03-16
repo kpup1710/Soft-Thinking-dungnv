@@ -206,6 +206,10 @@ class ServerArgs:
     add_noise_dirichlet: bool = False
     add_noise_gumbel_softmax: bool = False
     use_projection_concept_token: bool = False
+    use_pseudoinverse_concept_token: bool = False
+    use_simplex_concept_token: bool = False
+    use_topk_simplex_concept_token: bool = False
+    simplex_n_iter: int = 20
     # ==========
     # end of soft thinking
     # ==========

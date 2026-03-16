@@ -1,4 +1,4 @@
-python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
+# python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
 
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
@@ -18,7 +18,8 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 100000 \
-    --num_gpus 1 \
-    --num_samples 1 \
+    --num_gpus 4 \
+    --num_samples 16 \
     --enable_soft_thinking \
-    --use_projection_concept_token
+    --use_projection_concept_token \
+    --output_dir "results/st_projection"

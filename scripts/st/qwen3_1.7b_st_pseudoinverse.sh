@@ -1,6 +1,7 @@
-python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
+# python ./models/download.py --model_name "Qwen/Qwen3-1.7B"
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
+
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
     --model_name "./models/Qwen/Qwen3-1.7B" \
@@ -21,4 +22,6 @@ python run_sglang_softthinking.py \
     --end_idx 100000 \
     --num_gpus 4 \
     --num_samples 16 \
-    --enable_soft_thinking
+    --enable_soft_thinking \
+    --use_pseudoinverse_concept_token \
+    --output_dir "results/st_pseudoinverse"

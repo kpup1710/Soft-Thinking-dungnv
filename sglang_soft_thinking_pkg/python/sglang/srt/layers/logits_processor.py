@@ -364,7 +364,12 @@ class LogitsProcessor(nn.Module):
             # ==========
             # begin of soft thinking
             # ==========
-            _pruned_hs = pruned_states if global_server_args_dict.get("use_projection_concept_token", False) else None
+            _pruned_hs = pruned_states if (
+                global_server_args_dict.get("use_projection_concept_token", False)
+                or global_server_args_dict.get("use_pseudoinverse_concept_token", False)
+                or global_server_args_dict.get("use_simplex_concept_token", False)
+                or global_server_args_dict.get("use_topk_simplex_concept_token", False)
+            ) else None
             # ==========
             # end of soft thinking
             # ==========

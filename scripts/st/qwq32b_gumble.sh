@@ -24,7 +24,7 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 10000 \
-    --num_gpus 8 \
+    --num_gpus 4 \
     --num_samples 16 \
     --enable_soft_thinking \
     --add_noise_gumbel_softmax \
@@ -47,7 +47,7 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 10000 \
-    --num_gpus 8 \
+    --num_gpus 4 \
     --num_samples 16 \
     --enable_soft_thinking \
     --add_noise_gumbel_softmax \
@@ -70,7 +70,7 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 10000 \
-    --num_gpus 8 \
+    --num_gpus 4 \
     --num_samples 16 \
     --enable_soft_thinking \
     --add_noise_gumbel_softmax \

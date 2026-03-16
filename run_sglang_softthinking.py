@@ -72,6 +72,10 @@ def main():
     parser.add_argument("--think_end_str", type=str, default="</think>")
     parser.add_argument("--max_topk", type=int, default=15)
     parser.add_argument("--use_projection_concept_token", action="store_true", help="Use orthogonal projection onto unembedding subspace as concept token")
+    parser.add_argument("--use_pseudoinverse_concept_token", action="store_true", help="Use probability-weighted sum of ALL unembedding rows as concept token: ẽ = W^T softmax(Wh)")
+    parser.add_argument("--use_simplex_concept_token", action="store_true", help="Use Frank-Wolfe to find closest point to h on the convex hull of ALL unembedding rows: min_{c in simplex} ||W^T c - h||²")
+    parser.add_argument("--use_topk_simplex_concept_token", action="store_true", help="Use Frank-Wolfe to find closest point to h on the convex hull of top-k unembedding rows: min_{c in Δ_K} ||W_k^T c - h||²")
+    parser.add_argument("--simplex_n_iter", type=int, default=20, help="Number of Frank-Wolfe iterations for simplex concept token methods")
 
     args = parser.parse_args()
 
@@ -190,11 +194,17 @@ Test Cases:
         (f"_gumbel_{args.gumbel_softmax_temperature}" if args.add_noise_gumbel_softmax else "")
         + (f"_dirichlet_{args.dirichlet_alpha}" if args.add_noise_dirichlet else "")
     )
+    projection_suffix = (
+        "_projection" if args.use_projection_concept_token else
+        "_pseudoinverse" if args.use_pseudoinverse_concept_token else
+        f"_simplex{args.simplex_n_iter}" if args.use_simplex_concept_token else
+        f"_topksimplex{args.simplex_n_iter}" if args.use_topk_simplex_concept_token else ""
+    )
     base_filename = (
         f"{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_"
         f"{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_"
         f"{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_"
-        f"{args.early_stopping_length_threshold}{noise_suffix}"
+        f"{args.early_stopping_length_threshold}{noise_suffix}{projection_suffix}"
     )
     results_file = f"{args.output_dir}/results/{dataset}/{base_filename}.json"
     results_statistics_file = f"{args.output_dir}/results/{dataset}/{base_filename}_statistics.json"
@@ -267,6 +277,10 @@ Test Cases:
                 disable_overlap_schedule=True,
                 enable_soft_thinking=args.enable_soft_thinking,
                 use_projection_concept_token=args.use_projection_concept_token,
+                use_pseudoinverse_concept_token=args.use_pseudoinverse_concept_token,
+                use_simplex_concept_token=args.use_simplex_concept_token,
+                use_topk_simplex_concept_token=args.use_topk_simplex_concept_token,
+                simplex_n_iter=args.simplex_n_iter,
                 add_noise_dirichlet=args.add_noise_dirichlet,
                 add_noise_gumbel_softmax=args.add_noise_gumbel_softmax,
                 max_topk=args.max_topk,

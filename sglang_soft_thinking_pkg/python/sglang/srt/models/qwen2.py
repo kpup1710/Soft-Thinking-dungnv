@@ -415,17 +415,9 @@ class Qwen2ForCausalLM(nn.Module):
             # ==========
             # begin of soft thinking
             # ==========
-            if (global_server_args_dict.get("use_projection_concept_token", False)
-                    and logits_output.topk_indices is not None
-                    and logits_output.pruned_hidden_states is not None
-                    and hasattr(self.lm_head, "weight")):
-                pruned_hs = logits_output.pruned_hidden_states.to(self.lm_head.weight.dtype)  # [B, D]
-                W_k = self.lm_head.weight[logits_output.topk_indices.long()]                  # [B, K, D]
-                Wh  = torch.bmm(W_k, pruned_hs.unsqueeze(-1))                                 # [B, K, 1]
-                WWT = torch.bmm(W_k, W_k.transpose(1, 2))                                     # [B, K, K]
-                c   = torch.linalg.solve(WWT, Wh)                                             # [B, K, 1]
-                logits_output.concept_embedding = torch.bmm(
-                    W_k.transpose(1, 2), c).squeeze(-1)                                       # [B, D]
+            # All concept embedding methods (projection, pseudoinverse, simplex, topk_simplex)
+            # are computed in model_runner.sample() after sampling, where topk_indices is
+            # available and TP-aware implementations can be used.
             # ==========
             # end of soft thinking
             # ==========

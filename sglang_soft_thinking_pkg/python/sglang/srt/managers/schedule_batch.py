@@ -1685,7 +1685,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 # ==========
                 # begin of soft thinking
                 # ==========
-                if (global_server_args_dict.get("use_projection_concept_token", False)
+                if ((global_server_args_dict.get("use_projection_concept_token", False)
+                        or global_server_args_dict.get("use_pseudoinverse_concept_token", False)
+                        or global_server_args_dict.get("use_simplex_concept_token", False)
+                        or global_server_args_dict.get("use_topk_simplex_concept_token", False))
                         and all(req.concept_embedding is not None for req in self.reqs)):
                     concept_embeddings = torch.stack([req.concept_embedding for req in self.reqs])
                 # ==========

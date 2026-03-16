@@ -20,11 +20,11 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 100000 \
-    --num_gpus 8 \
-    --num_samples 1 \
+    --num_gpus 4 \
+    --num_samples 16 \
     --enable_soft_thinking \
     --use_llm_judge \
-    --judge_model_name "gpt-4.1-2025-04-14" 
+    --judge_model_name "gpt-4.1-2025-04-14"
 
 python run_sglang_softthinking.py \
     --dataset "math500" \
@@ -44,8 +44,8 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 100000 \
-    --num_gpus 8 \
-    --num_samples 1 \
+    --num_gpus 4 \
+    --num_samples 16 \
     --enable_soft_thinking \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
@@ -68,8 +68,8 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 100000 \
-    --num_gpus 8 \
-    --num_samples 1 \
+    --num_gpus 4 \
+    --num_samples 16 \
     --enable_soft_thinking \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
@@ -92,8 +92,8 @@ python run_sglang_softthinking.py \
     --mem_fraction_static 0.8 \
     --start_idx 0 \
     --end_idx 100000 \
-    --num_gpus 8 \
-    --num_samples 1 \
+    --num_gpus 4 \
+    --num_samples 16 \
     --enable_soft_thinking \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
