@@ -22,6 +22,6 @@ python run_sglang_softthinking.py \
     --num_samples 16 \
     --enable_soft_thinking \
     --use_topk_simplex_concept_token \
-    --simplex_n_iter 2 \
+    --simplex_n_iter 10 \
     --mem_fraction_static 0.8 \
     --output_dir "results/st_topksimplex"

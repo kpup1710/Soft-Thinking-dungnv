@@ -1188,18 +1188,20 @@ class ModelRunner:
                 # 2. Use embed_tokens rows with those coefficients as output (correct input space)
                 # For tied models W_lm == W_embed so this reduces to the original formula.
                 topk_idx = logits_output.topk_indices.long()              # [B, K]
-                W_lm_k = _gather_rows_tp(topk_idx, W=W_local)            # [B, K, D] lm_head rows
                 W_emb_k = _gather_rows_tp(topk_idx)                      # [B, K, D] embed_tokens rows
-                W_lm32  = W_lm_k.float()
                 W_emb32 = W_emb_k.float()
                 hs32    = pruned_hs.float()
-                Wh  = torch.bmm(W_lm32, hs32.unsqueeze(-1))              # [B, K, 1]
-                WWT = torch.bmm(W_lm32, W_lm32.transpose(1, 2))          # [B, K, K]
-                K = W_lm32.shape[1]
+                Wh  = torch.bmm(W_emb32, hs32.unsqueeze(-1))             # [B, K, 1]
+                WWT = torch.bmm(W_emb32, W_emb32.transpose(1, 2))        # [B, K, K]
+                K = W_emb32.shape[1]
                 WWT = WWT + 1e-4 * torch.eye(K, device=WWT.device, dtype=torch.float32).unsqueeze(0)
-                c   = torch.linalg.solve(WWT, Wh)                         # [B, K, 1]
-                logits_output.concept_embedding = _safe_concept_emb(
-                    torch.bmm(W_emb32.transpose(1, 2), c).squeeze(-1).to(pruned_hs.dtype))
+                c   = torch.linalg.solve(WWT, Wh)                        # [B, K, 1]
+                emb = torch.bmm(W_emb32.transpose(1, 2), c).squeeze(-1) # [B, D]
+                # Normalize output to typical embedding norm.
+                embed_norm = W_emb32.norm(dim=-1).mean()
+                emb_norm = emb.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                emb = emb / emb_norm * embed_norm
+                logits_output.concept_embedding = _safe_concept_emb(emb.to(pruned_hs.dtype))
             elif global_server_args_dict.get("use_pseudoinverse_concept_token", False):
                 # Prob-weighted sum over ALL embed_tokens rows (probs from lm_head logits).
                 full_logits = _full_logits_tp()                            # [B, V]
@@ -1226,17 +1228,24 @@ class ModelRunner:
                 logits_output.concept_embedding = _safe_concept_emb(emb)
             elif (global_server_args_dict.get("use_topk_simplex_concept_token", False)
                     and logits_output.topk_indices is not None):
-                # Frank-Wolfe over top-k embed_tokens simplex, warm-started from standard ST.
-                W_k = _gather_rows_tp(logits_output.topk_indices.long())  # [B, K, D]
+                # Frank-Wolfe over conv(top-k embed_tokens rows), warm-started from standard ST.
+                # Objective: min ||emb - h_target||²  s.t. emb in conv(W_emb_k)
+                # h_target = h rescaled to embedding norm so the FW target is commensurable
+                # with embedding vectors (post-RMSNorm hidden states have much larger norm).
+                W_k = _gather_rows_tp(logits_output.topk_indices.long())   # [B, K, D]
                 n_iter = global_server_args_dict.get("simplex_n_iter", 20)
-                # Warm start: standard ST (topk_probs already computed by sampler via lm_head)
-                topk_probs = logits_output.topk_probs.to(W_k.dtype)       # [B, K]
-                emb = (topk_probs.unsqueeze(1) @ W_k).squeeze(1)          # [B, D]
-                soft_mask = forward_batch.sampling_info.soft_thinking_modes  # [B] bool or None
+                topk_probs = logits_output.topk_probs.to(W_k.dtype)        # [B, K]
+                topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
+                emb = (topk_probs.unsqueeze(1) @ W_k).squeeze(1)           # [B, D] warm start = standard ST
+                soft_mask = forward_batch.sampling_info.soft_thinking_modes
                 soft_rows = soft_mask.nonzero(as_tuple=True)[0] if soft_mask is not None else torch.arange(emb.shape[0], device=emb.device)
                 if soft_rows.numel() > 0:
+                    h_soft = pruned_hs[soft_rows]
+                    embed_norm = W_k.norm(dim=-1).mean()
+                    h_norm = h_soft.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                    h_target = h_soft / h_norm * embed_norm                # rescale to embedding space
                     for _ in range(n_iter):
-                        residual = emb[soft_rows] - pruned_hs[soft_rows]
+                        residual = emb[soft_rows] - h_target
                         grad = torch.bmm(W_k[soft_rows], residual.unsqueeze(-1)).squeeze(-1)
                         k_local = grad.argmin(dim=-1)
                         w_k = W_k[soft_rows, k_local]
@@ -1245,16 +1254,14 @@ class ModelRunner:
                         denom = (d * d).sum(dim=-1).clamp(min=1e-10)
                         gamma = (num / denom).clamp(0.0, 1.0).unsqueeze(-1)
                         emb[soft_rows] = emb[soft_rows] + gamma * d
-                # Non-soft rows: warm start = exact hard token embedding (topk_probs=[1,0,...])
-                # No Frank-Wolfe needed; emb[non_soft] is already embed_tokens[sampled_token].
                 logits_output.concept_embedding = _safe_concept_emb(emb)
 
-            # For projection/pseudoinverse/simplex, override non-soft rows with exact
-            # hard token embeddings. Those methods compute soft concepts for all rows,
-            # but answer-phase tokens must use their actual sampled token embedding.
+            # Override non-soft rows with exact hard token embeddings for ALL concept token
+            # methods. Answer-phase tokens must use their actual sampled token embedding.
+            # (topksimplex also needs this: the sampler sets topk_probs[non_soft,0]=1 but
+            # leaves topk_probs[non_soft,1:] non-zero, so the warm start is not exact.)
             if (logits_output.concept_embedding is not None
-                    and logits_output.topk_indices is not None
-                    and not global_server_args_dict.get("use_topk_simplex_concept_token", False)):
+                    and logits_output.topk_indices is not None):
                 soft_mask = forward_batch.sampling_info.soft_thinking_modes  # [B] bool or None
                 if soft_mask is None:
                     non_soft_rows = torch.zeros(0, dtype=torch.long, device=logits_output.concept_embedding.device)
