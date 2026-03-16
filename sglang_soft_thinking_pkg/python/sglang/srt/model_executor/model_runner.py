@@ -1144,52 +1144,69 @@ class ModelRunner:
             )
             import torch
 
-            W_local = self.model.lm_head.weight                        # [V/tp, D]
+            W_local = self.model.lm_head.weight                        # [V/tp, D] - for logits
+            # embed_tokens may differ from lm_head for non-tied models (e.g. QwQ-32B).
+            # Concept embeddings must be in embed_tokens space, matching standard ST.
+            if hasattr(self.model, "get_embed_and_head"):
+                W_embed_local = self.model.get_embed_and_head()[0].to(W_local.dtype)  # [V/tp, D]
+            else:
+                W_embed_local = W_local                                # fallback (tied)
             pruned_hs = logits_output.pruned_hidden_states.to(W_local.dtype)
             V_local = W_local.shape[0]
             start = self.tp_rank * V_local
 
             def _gather_rows_tp(global_indices):
-                """TP-aware row lookup: [B, K] global indices → [B, K, D] rows."""
+                """TP-aware row lookup from embed_tokens: [B, K] global indices → [B, K, D]."""
                 in_range = (global_indices >= start) & (global_indices < start + V_local)
                 local_idx = (global_indices - start).clamp(0, V_local - 1)
-                rows = W_local[local_idx]
+                rows = W_embed_local[local_idx]
                 rows = rows * in_range.unsqueeze(-1).to(rows.dtype)
                 return tensor_model_parallel_all_reduce(rows)
 
             def _full_logits_tp():
-                """TP-aware full vocab logits: pruned_hs @ W.T → [B, V]."""
+                """TP-aware full vocab logits via lm_head: pruned_hs @ W_lm.T → [B, V]."""
                 local_logits = pruned_hs @ W_local.T                   # [B, V/tp]
                 return tensor_model_parallel_all_gather(local_logits, dim=-1)  # [B, V]
 
             def _weighted_rows_tp(probs):
-                """TP-aware prob-weighted sum: probs [B, V] @ W → [B, D]."""
+                """TP-aware prob-weighted sum over embed_tokens: probs [B, V] @ W_embed → [B, D]."""
                 local_probs = probs[:, start:start + V_local]          # [B, V/tp]
-                local_emb = local_probs @ W_local                      # [B, D]
+                local_emb = local_probs @ W_embed_local                # [B, D]
                 return tensor_model_parallel_all_reduce(local_emb)     # [B, D]
+
+            def _safe_concept_emb(emb):
+                """Replace any NaN/Inf with zeros to prevent cascading corruption."""
+                return torch.nan_to_num(emb, nan=0.0, posinf=0.0, neginf=0.0)
 
             if (global_server_args_dict.get("use_projection_concept_token", False)
                     and logits_output.topk_indices is not None):
+                # Project pruned_hs onto the span of the top-k embed_tokens rows.
                 W_k = _gather_rows_tp(logits_output.topk_indices.long())  # [B, K, D]
                 W_k32 = W_k.float()
                 hs32  = pruned_hs.float()
                 Wh  = torch.bmm(W_k32, hs32.unsqueeze(-1))                # [B, K, 1]
                 WWT = torch.bmm(W_k32, W_k32.transpose(1, 2))             # [B, K, K]
+                # Ridge regularization to prevent near-singular WWT from producing NaN.
+                K = W_k32.shape[1]
+                WWT = WWT + 1e-4 * torch.eye(K, device=WWT.device, dtype=WWT.dtype).unsqueeze(0)
                 c   = torch.linalg.solve(WWT, Wh)                         # [B, K, 1]
-                logits_output.concept_embedding = torch.bmm(
-                    W_k32.transpose(1, 2), c).squeeze(-1).to(pruned_hs.dtype)
+                logits_output.concept_embedding = _safe_concept_emb(
+                    torch.bmm(W_k32.transpose(1, 2), c).squeeze(-1).to(pruned_hs.dtype))
             elif global_server_args_dict.get("use_pseudoinverse_concept_token", False):
+                # Prob-weighted sum over ALL embed_tokens rows (probs from lm_head logits).
                 full_logits = _full_logits_tp()                            # [B, V]
                 probs = torch.softmax(full_logits, dim=-1)                 # [B, V]
-                logits_output.concept_embedding = _weighted_rows_tp(probs) # [B, D]
+                logits_output.concept_embedding = _safe_concept_emb(
+                    _weighted_rows_tp(probs))                              # [B, D]
             elif global_server_args_dict.get("use_simplex_concept_token", False):
+                # Frank-Wolfe over full embed_tokens simplex, warm-started from pseudoinverse.
                 n_iter = global_server_args_dict.get("simplex_n_iter", 20)
                 full_logits = _full_logits_tp()                            # [B, V]
                 probs = torch.softmax(full_logits, dim=-1)                 # [B, V]
                 emb = _weighted_rows_tp(probs)                             # [B, D] warm start
                 for _ in range(n_iter):
                     residual = emb - pruned_hs                             # [B, D]
-                    local_grad = residual @ W_local.T                      # [B, V/tp]
+                    local_grad = residual @ W_embed_local.T                # [B, V/tp]
                     full_grad = tensor_model_parallel_all_gather(local_grad, dim=-1)  # [B, V]
                     k = full_grad.argmin(dim=-1)                           # [B] global indices
                     w_k = _gather_rows_tp(k.unsqueeze(-1)).squeeze(1)     # [B, D]
@@ -1198,17 +1215,18 @@ class ModelRunner:
                     denom = (d * d).sum(dim=-1).clamp(min=1e-10)
                     gamma = (num / denom).clamp(0.0, 1.0).unsqueeze(-1)
                     emb = emb + gamma * d
-                logits_output.concept_embedding = emb
+                logits_output.concept_embedding = _safe_concept_emb(emb)
             elif (global_server_args_dict.get("use_topk_simplex_concept_token", False)
                     and logits_output.topk_indices is not None):
+                # Frank-Wolfe over top-k embed_tokens simplex, warm-started from standard ST.
                 W_k = _gather_rows_tp(logits_output.topk_indices.long())  # [B, K, D]
                 n_iter = global_server_args_dict.get("simplex_n_iter", 20)
-                topk_logits = torch.bmm(W_k, pruned_hs.unsqueeze(-1)).squeeze(-1)
-                emb = torch.softmax(topk_logits, dim=-1).unsqueeze(1) @ W_k
-                emb = emb.squeeze(1)
+                # Warm start: standard ST (topk_probs already computed by sampler via lm_head)
+                topk_probs = logits_output.topk_probs.to(W_k.dtype)       # [B, K]
+                emb = (topk_probs.unsqueeze(1) @ W_k).squeeze(1)          # [B, D]
                 for _ in range(n_iter):
                     residual = emb - pruned_hs
-                    grad = torch.bmm(W_k, residual.unsqueeze(-1)).squeeze(-1)
+                    grad = torch.bmm(W_k, residual.unsqueeze(-1)).squeeze(-1)  # [B, K]
                     k_local = grad.argmin(dim=-1)
                     w_k = W_k[torch.arange(W_k.shape[0], device=W_k.device), k_local]
                     d = w_k - emb
@@ -1216,7 +1234,7 @@ class ModelRunner:
                     denom = (d * d).sum(dim=-1).clamp(min=1e-10)
                     gamma = (num / denom).clamp(0.0, 1.0).unsqueeze(-1)
                     emb = emb + gamma * d
-                logits_output.concept_embedding = emb
+                logits_output.concept_embedding = _safe_concept_emb(emb)
 
         # ==========
         # end of soft thinking
